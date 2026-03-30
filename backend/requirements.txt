@@ -1,5 +1,15 @@
 fastapi
 uvicorn
 pymongo
-python-multipart
 python-dotenv
+python-multipart
+pillow
+opencv-python
+numpy
+scikit-learn
+torch
+torchvision
+sentence-transformers
+requests
+certifi
+dnspython
