@@ -1,0 +1,38 @@
+# ---------------- OS ----------------
+.DS_Store
+Thumbs.db
+
+# ---------------- Python backend ----------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# ---------------- Environment / secrets ----------------
+.env
+*.env
+backend/.env
+# ---------------- Backend uploads / generated files ----------------
+backend/static/uploads/
+backend/uploads/
+
+# ---------------- Frontend ----------------
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ---------------- Logs ----------------
+*.log
+
+# ---------------- VS Code ----------------
+.vscode/
+
+# ---------------- Misc ----------------
+coverage/
