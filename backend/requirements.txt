@@ -13,3 +13,4 @@ sentence-transformers
 requests
 certifi
 dnspython
+clarifai

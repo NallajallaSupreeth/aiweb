@@ -1,70 +1,120 @@
-# services/vision.py
+import requests
+import os
 
-import cv2
-import numpy as np
-from sklearn.cluster import KMeans
-import random
+# ==============================
+# 🔐 ENV VARIABLES
+# ==============================
+CLARIFAI_PAT = os.getenv("CLARIFAI_PAT")
+CLARIFAI_USER_ID = os.getenv("CLARIFAI_USER_ID")
+CLARIFAI_APP_ID = os.getenv("CLARIFAI_APP_ID")
 
-# ---------- Category Detection (Still Dummy for now) ----------
-CATEGORIES = ["t-shirt", "shirt", "pants", "jeans", "dress", "jacket", "skirt"]
+HEADERS = {
+    "Authorization": f"Key {CLARIFAI_PAT}",
+    "Content-Type": "application/json"
+}
 
-def detect_category(image_path):
-    # TODO: Replace with ML model (Week 2 advanced / Week 3)
-    return random.choice(CATEGORIES)
-
-
-# ---------- Dominant Color Detection (Improved) ----------
-def detect_dominant_color(image_path):
-
-    image = cv2.imread(image_path)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-    # Resize for faster processing
-    image = cv2.resize(image, (100, 100))
-
-    pixels = image.reshape(-1, 3)
-
-    kmeans = KMeans(n_clusters=3, n_init=10)
-    kmeans.fit(pixels)
-
-    dominant_color = kmeans.cluster_centers_[0]
-
-    return rgb_to_color_name(dominant_color)
+# ✅ CORRECT MODEL IDs
+GENERAL_MODEL_ID = "aaa03c23b3724a16a56b629203edc62c"
+COLOR_MODEL_ID = "eeed0b6733a644cea07cf4c60f87ebb7"
 
 
-def rgb_to_color_name(rgb):
-    r, g, b = rgb
+# ==============================
+# 🧠 GENERIC CLARIFAI CALL
+# ==============================
+def call_clarifai(image_url, model_id):
+    url = f"https://api.clarifai.com/v2/models/{model_id}/outputs"
 
-    if r > 200 and g < 80 and b < 80:
-        return "red"
-    elif r < 80 and g > 200 and b < 80:
-        return "green"
-    elif r < 80 and g < 80 and b > 200:
-        return "blue"
-    elif r > 200 and g > 200 and b < 80:
-        return "yellow"
-    elif r > 200 and g > 200 and b > 200:
-        return "white"
-    elif r < 50 and g < 50 and b < 50:
-        return "black"
-    else:
-        return "other"
+    data = {
+        "user_app_id": {
+            "user_id": CLARIFAI_USER_ID,
+            "app_id": CLARIFAI_APP_ID
+        },
+        "inputs": [
+            {
+                "data": {
+                    "image": {
+                        "url": image_url
+                    }
+                }
+            }
+        ]
+    }
+
+    response = requests.post(url, headers=HEADERS, json=data)
+
+    res = response.json()
+
+    print("CLARIFAI RESPONSE:", res)  # DEBUG
+
+    return res
 
 
-# ---------- Pattern Detection (Real Logic) ----------
-def detect_pattern(image_path):
+# ==============================
+# 👕 CATEGORY DETECTION
+# ==============================
+def detect_category(image_url):
+    try:
+        res = call_clarifai(image_url, GENERAL_MODEL_ID)
 
-    image = cv2.imread(image_path)
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        concepts = res["outputs"][0]["data"]["concepts"]
 
-    # Edge detection
-    edges = cv2.Canny(gray, 50, 150)
+        for c in concepts:
+            name = c["name"].lower()
 
-    edge_density = np.mean(edges)
+            if name in [
+                "shirt", "t-shirt", "jeans", "pants",
+                "jacket", "dress", "shoes", "sneakers",
+                "watch"
+            ]:
+                return name
 
-    if edge_density < 5:
+        return "unknown"
+
+    except Exception as e:
+        print("Category error:", e)
+        return "unknown"
+
+
+# ==============================
+# 🎨 COLOR DETECTION
+# ==============================
+def detect_dominant_color(image_url):
+    try:
+        res = call_clarifai(image_url, COLOR_MODEL_ID)
+
+        colors = res["outputs"][0]["data"]["colors"]
+
+        if colors:
+            return colors[0]["w3c"]["name"].lower()
+
+        return "unknown"
+
+    except Exception as e:
+        print("Color error:", e)
+        return "unknown"
+
+
+# ==============================
+# 🧵 PATTERN DETECTION
+# ==============================
+def detect_pattern(image_url):
+    try:
+        res = call_clarifai(image_url, GENERAL_MODEL_ID)
+
+        concepts = res["outputs"][0]["data"]["concepts"]
+
+        for c in concepts:
+            name = c["name"].lower()
+
+            if "striped" in name:
+                return "striped"
+            if "pattern" in name:
+                return "patterned"
+            if "print" in name:
+                return "printed"
+
         return "solid"
-    elif edge_density < 15:
-        return "striped"
-    else:
-        return "patterned"
+
+    except Exception as e:
+        print("Pattern error:", e)
+        return "solid"

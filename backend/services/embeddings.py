@@ -1,50 +1,83 @@
-# services/embeddings.py
-
 from sentence_transformers import SentenceTransformer
 from PIL import Image
 import torch
 import torchvision.models as models
-import torchvision.transforms as transforms
+import numpy as np
 
-# ---------- TEXT EMBEDDING MODEL ----------
-text_model = SentenceTransformer('all-MiniLM-L6-v2')
+# ==============================
+# ⚙️ DEVICE CONFIG
+# ==============================
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# ==============================
+# 🧠 TEXT EMBEDDING MODEL
+# ==============================
+text_model = SentenceTransformer('all-MiniLM-L6-v2', device=DEVICE)
 
 
 def create_style_embedding(answers: list):
     """
-    For style quiz (text-based)
+    Convert user style quiz answers → embedding
     """
-    return text_model.encode(answers).tolist()
+    if not answers:
+        return []
+
+    embedding = text_model.encode(answers, normalize_embeddings=True)
+
+    # Average all answers into one vector
+    final_embedding = np.mean(embedding, axis=0)
+
+    return final_embedding.tolist()
 
 
-# ---------- IMAGE EMBEDDING MODEL ----------
-# Use lightweight pretrained ResNet18 (faster than ResNet50)
-image_model = models.resnet18(pretrained=True)
+# ==============================
+# 🖼️ IMAGE EMBEDDING MODEL (FIXED)
+# ==============================
 
-# Remove final classification layer → get feature vector
+# ✅ Use new weights API
+weights = models.ResNet18_Weights.DEFAULT
+
+# ✅ Load model with weights
+image_model = models.resnet18(weights=weights)
+
+# ✅ Remove classification layer
 image_model = torch.nn.Sequential(*list(image_model.children())[:-1])
+image_model.to(DEVICE)
 image_model.eval()
 
-# Image preprocessing
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor()
-])
+# ✅ CORRECT TRANSFORM (IMPORTANT FIX)
+transform = weights.transforms()
 
 
+# ==============================
+# 🔥 GENERATE IMAGE EMBEDDING
+# ==============================
 def generate_image_embedding(image_path):
     """
-    Convert image → embedding vector
+    Convert image → normalized embedding vector
     """
 
-    image = Image.open(image_path).convert("RGB")
-    img = transform(image).unsqueeze(0)
+    try:
+        image = Image.open(image_path).convert("RGB")
 
-    with torch.no_grad():
-        embedding = image_model(img)
+        # Apply correct preprocessing
+        img = transform(image).unsqueeze(0).to(DEVICE)
 
-    # Flatten vector
-    embedding = embedding.view(-1)
+        with torch.no_grad():
+            embedding = image_model(img)
 
-    # Reduce size (important for DB storage)
-    return embedding.tolist()[:128]
+        # Flatten
+        embedding = embedding.view(-1).cpu().numpy()
+
+        # Normalize (IMPORTANT for cosine similarity)
+        norm = np.linalg.norm(embedding)
+        if norm != 0:
+            embedding = embedding / norm
+
+        # Reduce size for DB storage
+        return embedding[:128].tolist()
+
+    except Exception as e:
+        print(f"Embedding error: {e}")
+        return []

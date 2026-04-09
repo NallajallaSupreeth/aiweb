@@ -5,12 +5,17 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from PIL import Image
-from routes import feedback
 
-# ✅ Load environment variables
+# ==============================
+# ✅ LOAD ENV VARIABLES
+# ==============================
+
 load_dotenv()
 
-# ✅ Ensure 'static' and 'static/uploads' directories exist
+# ==============================
+# 📁 STATIC SETUP
+# ==============================
+
 STATIC_DIR = "static"
 UPLOAD_DIR = os.path.join(STATIC_DIR, "uploads")
 
@@ -28,40 +33,107 @@ if not os.path.exists(favicon_path):
 
 print("✅ Environment and static directories initialized!")
 
-# ✅ Initialize FastAPI app
-app = FastAPI(title="Intelligent Personal Stylist API")
+# ==============================
+# 🚀 FASTAPI INITIALIZATION
+# ==============================
 
-# ✅ Enable CORS
+app = FastAPI(
+    title="Intelligent Personal Stylist API",
+    version="1.0.0"
+)
+
+# ==============================
+# 🌐 CORS CONFIGURATION
+# ==============================
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Later replace with frontend URL
+    allow_origins=["*"],  # 🔥 Change to frontend URL later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Serve static files
+# ==============================
+# 📂 STATIC FILES
+# ==============================
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# ✅ Favicon route
+# ==============================
+# 🔗 BASIC ROUTES
+# ==============================
+
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     return FileResponse(favicon_path)
 
-# ✅ Root route
 @app.get("/")
 def read_root():
     return {"message": "Welcome to the Intelligent Personal Stylist API 👗"}
 
-# ✅ Import routes
-from routes import user, wardrobe, style, recommendation, style_dna_routes, weather
+# ==============================
+# 📦 IMPORT ROUTES
+# ==============================
 
-# ✅ Include routers
+from routes import (
+    auth,                  # 🔥 NEW (AUTH SYSTEM)
+    user,
+    wardrobe,
+    style,
+    recommendation,
+    style_dna_routes,
+    weather,
+    feedback,
+    google_calendar
+)
+
+# ==============================
+# 🔌 REGISTER ROUTES
+# ==============================
+
+# 🔐 AUTH ROUTES (MOST IMPORTANT)
+app.include_router(auth.router, prefix="/api", tags=["Auth"])
+
+# 👤 USER
 app.include_router(user.router, prefix="/api", tags=["User"])
+
+# 👕 WARDROBE
 app.include_router(wardrobe.router, prefix="/api", tags=["Wardrobe"])
+
+# 🎨 STYLE
 app.include_router(style.router, prefix="/api", tags=["Style"])
-app.include_router(recommendation.router, prefix="/api/recommendations", tags=["Recommendations"])
-app.include_router(style_dna_routes.router, prefix="/api/style-dna", tags=["Style DNA"])
+
+# 🤖 RECOMMENDATIONS
+app.include_router(
+    recommendation.router,
+    prefix="/api/recommendations",
+    tags=["Recommendations"]
+)
+
+# 🧬 STYLE DNA
+app.include_router(
+    style_dna_routes.router,
+    prefix="/api/style-dna",
+    tags=["Style DNA"]
+)
+
+# 🌦️ WEATHER
 app.include_router(weather.router, prefix="/api", tags=["Weather"])
+
+# 💬 FEEDBACK
 app.include_router(feedback.router, prefix="/api", tags=["Feedback"])
+
+# 📅 GOOGLE CALENDAR
+app.include_router(
+    google_calendar.router,
+    prefix="/api/calendar",
+    tags=["Google Calendar"]
+)
+
+# ==============================
+# 🎯 STARTUP MESSAGE
+# ==============================
+
 print("🚀 FastAPI server initialized successfully!")
+print("📌 Swagger UI: http://localhost:8000/docs")

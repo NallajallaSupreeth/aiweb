@@ -1,13 +1,16 @@
 import os
 import shutil
 import uuid
-from fastapi import APIRouter, UploadFile, Form, HTTPException
+from fastapi import APIRouter, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from bson import ObjectId
 
 from db.connection import db
 
-# AI modules
+# 🔐 Auth
+from utils.dependencies import get_current_user
+
+# 🤖 AI modules
 from services.vision import detect_category, detect_dominant_color, detect_pattern
 from services.embeddings import generate_image_embedding
 from services.recommendation import recommend_items, generate_outfit
@@ -15,16 +18,19 @@ from services.recommendation import recommend_items, generate_outfit
 router = APIRouter()
 
 wardrobe_collection = db["wardrobe"]
-feedback_collection = db["feedback"]   # 🔥 NEW
+feedback_collection = db["feedback"]
 
 UPLOAD_FOLDER = "static/uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# 🔥 IMPORTANT: Replace this with NGROK URL when running
+BASE_URL = "http://127.0.0.1:8000"
 
 
 # ---------------- UPLOAD ----------------
 @router.post("/wardrobe/upload")
 async def upload_clothing(
-    user_id: str = Form(...),
+    user_id: str = Depends(get_current_user),
     category: str = Form(None),
     file: UploadFile = None
 ):
@@ -32,6 +38,7 @@ async def upload_clothing(
         raise HTTPException(status_code=400, detail="No image uploaded.")
 
     try:
+        # ✅ Save file
         file_ext = os.path.splitext(file.filename)[1]
         unique_filename = f"{uuid.uuid4()}{file_ext}"
         file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
@@ -39,14 +46,41 @@ async def upload_clothing(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # AI pipeline
-        detected_category = detect_category(file_path)
+        # ==============================
+        # 🌐 PUBLIC URL (IMPORTANT)
+        # ==============================
+        image_url = f"{BASE_URL}/{file_path}"
+
+        # ==============================
+        # 🧠 AI PIPELINE
+        # ==============================
+
+        # 🔹 CATEGORY
+        detected_category = detect_category(image_url)
+        if detected_category == "unknown":
+            detected_category = "shirt"  # fallback
+
         final_category = category if category else detected_category
 
-        color = detect_dominant_color(file_path)
-        pattern = detect_pattern(file_path)
-        embedding = generate_image_embedding(file_path)
+        # 🔹 COLOR
+        color = detect_dominant_color(image_url)
+        if color == "unknown":
+            color = "blue"  # fallback
 
+        # 🔹 PATTERN
+        pattern = detect_pattern(image_url)
+
+        # 🔹 EMBEDDING (safe handling)
+        try:
+            embedding = generate_image_embedding(file_path)
+            if not embedding:
+                embedding = []
+        except:
+            embedding = []
+
+        # ==============================
+        # 💾 STORE ITEM
+        # ==============================
         new_item = {
             "user_id": user_id,
             "category": final_category,
@@ -54,7 +88,12 @@ async def upload_clothing(
             "color": color,
             "pattern": pattern,
             "embedding": embedding,
-            "status": "available"
+
+            # 🧺 Extra features
+            "status": "clean",
+            "occasion": "casual",
+            "season": "all",
+            "last_used": None
         }
 
         result = wardrobe_collection.insert_one(new_item)
@@ -70,30 +109,40 @@ async def upload_clothing(
 
 
 # ---------------- GET WARDROBE ----------------
-@router.get("/wardrobe/{user_id}")
-async def get_wardrobe(user_id: str):
+@router.get("/wardrobe")
+async def get_wardrobe(user_id: str = Depends(get_current_user)):
     try:
         items = list(wardrobe_collection.find({"user_id": user_id}))
+
         for item in items:
             item["_id"] = str(item["_id"])
+
         return {"user_id": user_id, "wardrobe": items}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch wardrobe: {e}")
 
 
 # ---------------- DELETE ----------------
 @router.delete("/wardrobe/{item_id}")
-async def delete_wardrobe_item(item_id: str):
+async def delete_wardrobe_item(
+    item_id: str,
+    user_id: str = Depends(get_current_user)
+):
     try:
         if not ObjectId.is_valid(item_id):
             raise HTTPException(status_code=400, detail="Invalid item_id")
 
-        result = wardrobe_collection.find_one({"_id": ObjectId(item_id)})
+        item = wardrobe_collection.find_one({
+            "_id": ObjectId(item_id),
+            "user_id": user_id
+        })
 
-        if not result:
+        if not item:
             raise HTTPException(status_code=404, detail="Item not found")
 
-        image_path = result.get("image_url", "").lstrip("/")
+        image_path = item.get("image_url", "").lstrip("/")
+
         if image_path and os.path.exists(image_path):
             os.remove(image_path)
 
@@ -101,26 +150,27 @@ async def delete_wardrobe_item(item_id: str):
 
         return {"message": "🗑️ Item deleted successfully!"}
 
-    except HTTPException as e:
-        raise e
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
 
 
 # ---------------- UPDATE ----------------
 @router.put("/wardrobe/{item_id}")
-async def update_wardrobe_item(item_id: str, data: dict):
+async def update_wardrobe_item(
+    item_id: str,
+    data: dict,
+    user_id: str = Depends(get_current_user)
+):
     try:
         if not ObjectId.is_valid(item_id):
             raise HTTPException(status_code=400, detail="Invalid item_id")
 
-        update_result = wardrobe_collection.update_one(
-            {"_id": ObjectId(item_id)},
+        result = wardrobe_collection.update_one(
+            {"_id": ObjectId(item_id), "user_id": user_id},
             {"$set": data}
         )
 
-        if update_result.matched_count == 0:
+        if result.matched_count == 0:
             raise HTTPException(status_code=404, detail="Item not found")
 
         updated_item = wardrobe_collection.find_one({"_id": ObjectId(item_id)})
@@ -135,71 +185,42 @@ async def update_wardrobe_item(item_id: str, data: dict):
         raise HTTPException(status_code=500, detail=f"Update failed: {e}")
 
 
-# ---------------- RECOMMEND ITEMS (WITH FEEDBACK 🔥) ----------------
+# ---------------- RECOMMEND ----------------
 @router.get("/wardrobe/recommend/{item_id}")
-async def recommend_outfit(item_id: str):
-
+async def recommend_outfit(item_id: str, user_id: str = Depends(get_current_user)):
     try:
-        if not ObjectId.is_valid(item_id):
-            raise HTTPException(status_code=400, detail="Invalid item_id")
+        input_item = wardrobe_collection.find_one({
+            "_id": ObjectId(item_id),
+            "user_id": user_id
+        })
 
-        input_item = wardrobe_collection.find_one({"_id": ObjectId(item_id)})
+        wardrobe_items = list(wardrobe_collection.find({"user_id": user_id}))
+        feedbacks = list(feedback_collection.find({"user_id": user_id}))
 
-        if not input_item:
-            raise HTTPException(status_code=404, detail="Item not found")
-
-        wardrobe_items = list(
-            wardrobe_collection.find({"user_id": input_item["user_id"]})
-        )
-
-        # 🔥 FETCH FEEDBACK
-        feedbacks = list(
-            feedback_collection.find({"user_id": input_item["user_id"]})
-        )
-
-        # 🔥 PASS FEEDBACK TO ENGINE
         recommendations = recommend_items(input_item, wardrobe_items, feedbacks)
 
         for item in recommendations:
             item["_id"] = str(item["_id"])
 
-        return {
-            "input_item": str(input_item["_id"]),
-            "recommendations": recommendations
-        }
+        return {"recommendations": recommendations}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Recommendation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---------------- GENERATE OUTFIT ----------------
+# ---------------- OUTFIT ----------------
 @router.get("/wardrobe/outfit/{item_id}")
-async def get_outfit(item_id: str):
-
+async def get_outfit(item_id: str, user_id: str = Depends(get_current_user)):
     try:
-        if not ObjectId.is_valid(item_id):
-            raise HTTPException(status_code=400, detail="Invalid item_id")
+        input_item = wardrobe_collection.find_one({
+            "_id": ObjectId(item_id),
+            "user_id": user_id
+        })
 
-        input_item = wardrobe_collection.find_one({"_id": ObjectId(item_id)})
-
-        if not input_item:
-            raise HTTPException(status_code=404, detail="Item not found")
-
-        wardrobe_items = list(
-            wardrobe_collection.find({"user_id": input_item["user_id"]})
-        )
-
+        wardrobe_items = list(wardrobe_collection.find({"user_id": user_id}))
         outfit = generate_outfit(input_item, wardrobe_items)
 
-        if outfit["top"]:
-            outfit["top"]["_id"] = str(outfit["top"]["_id"])
-        if outfit["bottom"]:
-            outfit["bottom"]["_id"] = str(outfit["bottom"]["_id"])
-
-        return {
-            "input_item": str(input_item["_id"]),
-            "outfit": outfit
-        }
+        return {"outfit": outfit}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Outfit generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

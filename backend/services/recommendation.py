@@ -2,7 +2,9 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
 
-# ---------------- VECTOR UTILS ----------------
+# ==============================
+# 🔹 VECTOR UTILS
+# ==============================
 def to_vector(vec):
     if not vec or len(vec) == 0:
         return None
@@ -18,96 +20,110 @@ def compute_similarity(vec1, vec2):
 
     sim = cosine_similarity(v1, v2)[0][0]
 
-    # Normalize similarity
     return float(max(0, min(sim, 1)))
 
 
-# ---------------- COLOR LOGIC ----------------
-GOOD_COLOR_MATCHES = {
-    "black": ["white", "grey", "blue", "red"],
-    "white": ["black", "blue", "green", "red"],
-    "blue": ["white", "black"],
+# ==============================
+# 🎨 COLOR COMPATIBILITY (IMPROVED)
+# ==============================
+COLOR_HARMONY = {
+    "black": ["white", "grey", "blue", "beige"],
+    "white": ["black", "blue", "green", "grey"],
+    "blue": ["white", "black", "grey"],
     "red": ["black", "white"],
-    "green": ["white", "black"]
+    "green": ["white", "black"],
+    "yellow": ["black", "blue"],
+    "grey": ["black", "white"],
 }
 
 
-def is_color_compatible(color1, color2):
-    if not color1 or not color2:
-        return True
+def color_score(c1, c2):
+    if not c1 or not c2:
+        return 0.5
 
-    if color1 == color2:
-        return True
+    if c1 == c2:
+        return 1.0
 
-    return color2 in GOOD_COLOR_MATCHES.get(color1, [])
+    if c2 in COLOR_HARMONY.get(c1, []):
+        return 0.8
+
+    return 0.2
 
 
-# ---------------- CATEGORY LOGIC ----------------
+# ==============================
+# 👕 CATEGORY COMPATIBILITY
+# ==============================
 CATEGORY_MATCH = {
-    "t-shirt": ["jeans", "pants"],
-    "shirt": ["pants", "jeans"],
+    "t-shirt": ["jeans", "pants", "shorts"],
+    "shirt": ["jeans", "pants"],
     "jacket": ["jeans", "pants"],
+    "hoodie": ["jeans", "joggers"],
     "jeans": ["t-shirt", "shirt"],
     "pants": ["t-shirt", "shirt"],
-    "dress": []
+    "joggers": ["t-shirt", "hoodie"],
 }
 
 
-def is_category_compatible(input_cat, candidate_cat):
-    return candidate_cat in CATEGORY_MATCH.get(input_cat, [])
+def is_category_compatible(c1, c2):
+    return c2 in CATEGORY_MATCH.get(c1, [])
 
 
-# ---------------- WEATHER LOGIC 🔥 ----------------
-def is_weather_compatible(item, weather):
-    category = item.get("category", "")
+# ==============================
+# 🌦️ WEATHER LOGIC
+# ==============================
+def weather_score(item, weather):
+    if not weather:
+        return 1.0
+
     temp = weather.get("temperature", 25)
+    category = item.get("category", "")
 
     if temp > 30:
-        return category in ["t-shirt", "shirt"]
+        return 1.0 if category in ["t-shirt", "shirt"] else 0.4
 
-    elif temp < 20:
-        return category in ["jacket", "shirt"]
+    if temp < 20:
+        return 1.0 if category in ["jacket", "hoodie"] else 0.5
 
-    return True
+    return 0.8
 
 
-# ---------------- FEEDBACK ADJUSTMENT ----------------
-def adjust_score_with_feedback(user_id, item, base_score, feedbacks):
+# ==============================
+# 👍 FEEDBACK LEARNING
+# ==============================
+def feedback_score(item, feedbacks):
+    score = 0
 
-    if not feedbacks:
-        return base_score
-
-    for f in feedbacks:
+    for f in feedbacks or []:
         if f.get("item_id") == str(item["_id"]):
 
             if f.get("rating") == "like":
-                base_score += 0.2
+                score += 0.2
 
             elif f.get("rating") == "dislike":
-                base_score -= 0.3
+                score -= 0.3
 
-    return base_score
+    return score
 
 
-# ---------------- RECOMMENDATION ENGINE ----------------
+# ==============================
+# 🧠 FINAL RECOMMENDATION ENGINE
+# ==============================
 def recommend_items(
     input_item,
     wardrobe_items,
     feedbacks=None,
     weather=None,
-    top_k=3
+    top_k=5
 ):
 
-    recommendations = []
+    results = []
 
     input_embedding = input_item.get("embedding", [])
     input_color = input_item.get("color", "")
     input_category = input_item.get("category", "")
-    user_id = input_item.get("user_id", "")
 
     for item in wardrobe_items:
 
-        # Skip same item
         if str(item["_id"]) == str(input_item["_id"]):
             continue
 
@@ -115,99 +131,67 @@ def recommend_items(
         item_color = item.get("color", "")
         item_category = item.get("category", "")
 
-        # 1️⃣ Category filter
+        # ❌ Category mismatch
         if not is_category_compatible(input_category, item_category):
             continue
 
-        # 2️⃣ Weather filter (NEW 🔥)
-        if weather and not is_weather_compatible(item, weather):
-            continue
+        # 🔢 Scores
+        sim = compute_similarity(input_embedding, item_embedding)
+        col = color_score(input_color, item_color)
+        wea = weather_score(item, weather)
+        fb = feedback_score(item, feedbacks)
 
-        # 3️⃣ Color compatibility
-        color_score = 1 if is_color_compatible(input_color, item_color) else 0
-        if color_score == 0:
-            continue
+        # 🔥 FINAL SCORE (IMPORTANT)
+        final_score = (
+            0.5 * sim +
+            0.2 * col +
+            0.2 * wea +
+            0.1 * fb
+        )
 
-        # 4️⃣ Embedding similarity
-        similarity_score = compute_similarity(input_embedding, item_embedding)
+        results.append((item, final_score))
 
-        # 🔥 Final score
-        final_score = (0.7 * similarity_score) + (0.3 * color_score)
-
-        # 🔥 Feedback learning
-        final_score = adjust_score_with_feedback(user_id, item, final_score, feedbacks)
-
-        recommendations.append((item, final_score))
-
-    # 🔁 Fallback
-    if len(recommendations) == 0:
+    # 🔁 fallback
+    if not results:
         for item in wardrobe_items:
             if str(item["_id"]) == str(input_item["_id"]):
                 continue
 
             score = compute_similarity(input_embedding, item.get("embedding", []))
-            score = adjust_score_with_feedback(user_id, item, score, feedbacks)
+            results.append((item, score))
 
-            recommendations.append((item, score))
+    results = sorted(results, key=lambda x: x[1], reverse=True)
 
-    # Sort results
-    recommendations = sorted(recommendations, key=lambda x: x[1], reverse=True)
-
-    return [item for item, score in recommendations[:top_k]]
+    return [item for item, score in results[:top_k]]
 
 
-# ---------------- OUTFIT GENERATOR ----------------
+# ==============================
+# 👗 OUTFIT GENERATOR
+# ==============================
 def generate_outfit(input_item, wardrobe_items, weather=None):
 
     tops = []
     bottoms = []
 
     for item in wardrobe_items:
-        category = item.get("category", "")
+        cat = item.get("category", "")
 
-        if category in ["t-shirt", "shirt", "jacket"]:
+        if cat in ["t-shirt", "shirt", "jacket", "hoodie"]:
             tops.append(item)
-
-        elif category in ["jeans", "pants"]:
+        elif cat in ["jeans", "pants", "joggers"]:
             bottoms.append(item)
 
-    best_top = None
-    best_bottom = None
-    best_top_score = -1
-    best_bottom_score = -1
+    best_top = max(
+        tops,
+        key=lambda x: compute_similarity(input_item.get("embedding"), x.get("embedding")),
+        default=None
+    )
 
-    input_embedding = input_item.get("embedding", [])
-    input_color = input_item.get("color", "")
-
-    # 🔝 TOP selection
-    for item in tops:
-
-        if weather and not is_weather_compatible(item, weather):
-            continue
-
-        score = compute_similarity(input_embedding, item.get("embedding", []))
-
-        if is_color_compatible(input_color, item.get("color", "")):
-            score += 0.2
-
-        if score > best_top_score:
-            best_top_score = score
-            best_top = item
-
-    # 👖 BOTTOM selection
-    for item in bottoms:
-
-        if weather and not is_weather_compatible(item, weather):
-            continue
-
-        score = compute_similarity(input_embedding, item.get("embedding", []))
-
-        if is_color_compatible(input_color, item.get("color", "")):
-            score += 0.2
-
-        if score > best_bottom_score:
-            best_bottom_score = score
-            best_bottom = item
+    best_bottom = max(
+        bottoms,
+        key=lambda x: compute_similarity(input_item.get("embedding"), x.get("embedding")),
+        default=None
+    )
 
     return {
         "top": best_top,
