@@ -2,16 +2,19 @@ from fastapi import APIRouter, HTTPException, Depends
 from bson import ObjectId
 from db.connection import db
 from utils.dependencies import get_current_user
-from services.auth_service import get_user_by_id, update_user as update_user_service
+from services.auth_service import (
+    get_user_by_id,
+    update_user as update_user_service
+)
+from schemas.user_schema import UpdateProfileSchema
 
 router = APIRouter()
 
-# ✅ MongoDB collection
+# MongoDB collection
 user_collection = db["users"]
 
-
 # ==============================
-# 🔐 AUTH-BASED PROFILE ROUTES (NEW - IMPORTANT)
+# 🔐 AUTH-BASED PROFILE ROUTES
 # ==============================
 
 # 🔹 Get Current Logged-in User Profile
@@ -22,16 +25,25 @@ def get_profile(user_id: str = Depends(get_current_user)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    user["_id"] = str(user["_id"])  # ✅ Convert ObjectId to string
     return user
 
 
 # 🔹 Update Current User Profile
 @router.put("/user/update")
-def update_profile(data: dict, user_id: str = Depends(get_current_user)):
-    updated_user = update_user_service(user_id, data)
+def update_profile(
+    data: UpdateProfileSchema,
+    user_id: str = Depends(get_current_user)
+):
+    # ✅ Avoid overwriting with null values
+    update_data = data.dict(exclude_unset=True)
+
+    updated_user = update_user_service(user_id, update_data)
 
     if not updated_user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    updated_user["_id"] = str(updated_user["_id"])  # ✅ Fix ObjectId
 
     return {
         "message": "✅ Profile updated successfully",
@@ -40,10 +52,10 @@ def update_profile(data: dict, user_id: str = Depends(get_current_user)):
 
 
 # ==============================
-# 🧩 BASIC CRUD ROUTES (OPTIONAL / ADMIN USE)
+# 🧩 OPTIONAL CRUD ROUTES
 # ==============================
 
-# --- Create User (Optional, since auth handles signup) ---
+# 🔹 Create User (Optional)
 @router.post("/user")
 def create_user(user: dict):
     try:
@@ -56,7 +68,7 @@ def create_user(user: dict):
         raise HTTPException(status_code=500, detail=f"User creation failed: {e}")
 
 
-# --- Get User by ID ---
+# 🔹 Get User by ID
 @router.get("/user/{user_id}")
 def get_user(user_id: str):
     try:
@@ -72,12 +84,13 @@ def get_user(user_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to fetch user: {e}")
 
 
-# --- Update User by ID ---
+# 🔹 Update User by ID (Admin/Testing)
 @router.put("/user/{user_id}")
 def update_user(user_id: str, data: dict):
     try:
         result = user_collection.update_one(
-            {"_id": ObjectId(user_id)}, {"$set": data}
+            {"_id": ObjectId(user_id)},
+            {"$set": data}
         )
 
         if result.matched_count == 0:
@@ -95,7 +108,7 @@ def update_user(user_id: str, data: dict):
         raise HTTPException(status_code=500, detail=f"Update failed: {e}")
 
 
-# --- Delete User ---
+# 🔹 Delete User
 @router.delete("/user/{user_id}")
 def delete_user(user_id: str):
     try:

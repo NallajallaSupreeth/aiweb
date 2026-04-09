@@ -1,12 +1,15 @@
 from db.connection import db
 from utils.password_hash import hash_password, verify_password
-from models.user_model import create_user_model
+from models.user_model import create_user_model, update_user_model
 from bson import ObjectId
 
 users_collection = db["users"]
 
 
+# ==============================
 # 🔹 CREATE USER (SIGNUP)
+# ==============================
+
 def create_user(data):
     existing = users_collection.find_one({"email": data.email})
     if existing:
@@ -25,7 +28,10 @@ def create_user(data):
     return user_data
 
 
+# ==============================
 # 🔹 LOGIN / AUTHENTICATION
+# ==============================
+
 def authenticate_user(email, password):
     user = users_collection.find_one({"email": email})
 
@@ -39,7 +45,10 @@ def authenticate_user(email, password):
     return user
 
 
+# ==============================
 # 🔹 GET USER BY ID
+# ==============================
+
 def get_user_by_id(user_id):
     user = users_collection.find_one({"_id": ObjectId(user_id)})
 
@@ -50,22 +59,35 @@ def get_user_by_id(user_id):
     return user
 
 
-# 🔹 UPDATE USER PROFILE
+# ==============================
+# 🔹 UPDATE USER PROFILE (FIXED)
+# ==============================
+
 def update_user(user_id, update_data: dict):
+    user = users_collection.find_one({"_id": ObjectId(user_id)})
+
+    if not user:
+        return None
+
+    # ✅ Apply structured update (handles nested fields safely)
+    updated_user = update_user_model(user, update_data)
+
+    # ✅ Save updated document
     users_collection.update_one(
         {"_id": ObjectId(user_id)},
-        {"$set": update_data}
+        {"$set": updated_user}
     )
 
-    updated_user = users_collection.find_one({"_id": ObjectId(user_id)})
-
-    if updated_user:
-        updated_user["_id"] = str(updated_user["_id"])
+    # ✅ Convert ObjectId to string
+    updated_user["_id"] = str(updated_user["_id"])
 
     return updated_user
 
 
+# ==============================
 # 🔹 STORE GOOGLE TOKENS
+# ==============================
+
 def save_google_tokens(user_id, tokens: dict):
     users_collection.update_one(
         {"_id": ObjectId(user_id)},
