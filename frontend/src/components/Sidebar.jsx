@@ -1,18 +1,22 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import {
-  Shirt, Upload, User, Brain, Star, Settings, ChevronLeft, ChevronRight, Sparkles
+  LayoutDashboard, Shirt, Upload, User, Brain, Star, Settings,
+  ChevronLeft, ChevronRight, Sparkles
 } from 'lucide-react';
 
 const navItems = [
-  { to: '/wardrobe',        icon: Shirt,    label: 'Wardrobe' },
-  { to: '/upload',          icon: Upload,   label: 'Upload Clothing' },
-  { to: '/profile',         icon: User,     label: 'User Profile' },
-  { to: '/quiz',            icon: Brain,    label: 'Style Quiz' },
-  { to: '/recommendations', icon: Star,     label: 'Recommendations' },
-  { to: '/settings',        icon: Settings, label: 'Settings' },
+  { to: '/dashboard',       icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/wardrobe',        icon: Shirt,           label: 'Wardrobe' },
+  { to: '/upload',          icon: Upload,          label: 'Upload Clothing' },
+  { to: '/profile',         icon: User,            label: 'User Profile' },
+  { to: '/quiz',            icon: Brain,           label: 'Style Quiz' },
+  { to: '/recommendations', icon: Star,            label: 'Recommendations' },
+  { to: '/settings',        icon: Settings,        label: 'Settings' },
 ];
 
 export default function Sidebar({ collapsed, onToggle }) {
+  const navigate = useNavigate();
+
   return (
     <aside
       style={{
@@ -29,24 +33,32 @@ export default function Sidebar({ collapsed, onToggle }) {
         overflow: 'hidden',
       }}
     >
-      {/* Brand */}
-      <div style={{
-        padding: collapsed ? '24px 0' : '24px 20px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        justifyContent: collapsed ? 'center' : 'flex-start',
-        borderBottom: '1px solid rgba(255,255,255,0.07)',
-        minHeight: 'var(--navbar-height)',
-        flexShrink: 0,
-      }}>
+      {/* Brand — clicking navigates to dashboard */}
+      <div
+        onClick={() => navigate('/dashboard')}
+        style={{
+          padding: collapsed ? '24px 0' : '24px 20px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          justifyContent: collapsed ? 'center' : 'flex-start',
+          borderBottom: '1px solid rgba(255,255,255,0.07)',
+          minHeight: 'var(--navbar-height)',
+          flexShrink: 0,
+          cursor: 'pointer',
+        }}
+      >
         <div style={{
           width: 36, height: 36,
           background: 'linear-gradient(135deg, #3333CC, #8844ee)',
           borderRadius: 10,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           flexShrink: 0,
-        }}>
+          transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+        }}
+          onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.08)'; e.currentTarget.style.boxShadow = '0 4px 16px rgba(51,51,204,0.4)'; }}
+          onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = 'none'; }}
+        >
           <Sparkles size={18} color="white" />
         </div>
         {!collapsed && (
@@ -87,7 +99,7 @@ export default function Sidebar({ collapsed, onToggle }) {
             })}
             className="sidebar-nav-link"
           >
-            <Icon size={18} strokeWidth={isActive => isActive ? 2.5 : 1.8} style={{ flexShrink: 0 }} />
+            <Icon size={18} style={{ flexShrink: 0 }} />
             {!collapsed && <span style={{ whiteSpace: 'nowrap' }}>{label}</span>}
             {collapsed && (
               <span style={{
