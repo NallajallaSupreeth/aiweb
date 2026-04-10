@@ -7,6 +7,7 @@ pillow
 opencv-python
 numpy
 scikit-learn
+scikit-image
 torch
 torchvision
 sentence-transformers
@@ -15,3 +16,4 @@ certifi
 dnspython
 clarifai
 google-genai
+rembg

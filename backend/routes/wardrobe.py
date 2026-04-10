@@ -6,12 +6,7 @@ from fastapi.responses import JSONResponse
 from bson import ObjectId
 
 from db.connection import db
-
-# 🔐 Auth
 from utils.dependencies import get_current_user
-
-# 🤖 AI modules
-from services.vision import detect_category, detect_dominant_color, detect_pattern
 from services.embeddings import generate_image_embedding
 from services.recommendation import recommend_items, generate_outfit
 
@@ -38,39 +33,29 @@ async def upload_clothing(
         raise HTTPException(status_code=400, detail="No image uploaded.")
 
     try:
-        # ✅ Save file
-        file_ext = os.path.splitext(file.filename)[1]
+        # ── Save file ────────────────────────────────────────────────────────
+        file_ext = os.path.splitext(file.filename)[1] or ".jpg"
         unique_filename = f"{uuid.uuid4()}{file_ext}"
         file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
 
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # ==============================
-        # 🌐 PUBLIC URL (IMPORTANT)
-        # ==============================
         image_url = f"{BASE_URL}/{file_path}"
 
-        # ==============================
-        # 🧠 AI PIPELINE
-        # ==============================
+        # ── AI Analysis ──────────────────────────────────────────────────────
+        from services.vision import analyze_clothing_image
 
-        # 🔹 CATEGORY
-        detected_category = detect_category(image_url)
-        if detected_category == "unknown":
-            detected_category = "shirt"  # fallback
+        # Use absolute path so PIL.Image.open() can find the file
+        abs_file_path = os.path.abspath(file_path)
+        analysis = analyze_clothing_image(image_url=image_url, file_path=abs_file_path)
 
-        final_category = category if category else detected_category
+        print(f"[Upload] Analysis result: {analysis}")
 
-        # 🔹 COLOR
-        color = detect_dominant_color(image_url)
-        if color == "unknown":
-            color = "blue"  # fallback
+        # Override category if user specified
+        final_category = category if category else analysis["category"]
 
-        # 🔹 PATTERN
-        pattern = detect_pattern(image_url)
-
-        # 🔹 EMBEDDING (safe handling)
+        # ── Embedding ────────────────────────────────────────────────────────
         try:
             embedding = generate_image_embedding(file_path)
             if not embedding:
@@ -78,34 +63,54 @@ async def upload_clothing(
         except:
             embedding = []
 
-        # ==============================
-        # 💾 STORE ITEM
-        # ==============================
+        # ── Build DB document ────────────────────────────────────────────────
         new_item = {
             "user_id": user_id,
-            "category": final_category,
-            "image_url": f"/{file_path}",
-            "color": color,
-            "pattern": pattern,
-            "embedding": embedding,
 
-            # 🧺 Extra features
-            "status": "clean",
-            "occasion": "casual",
-            "season": "all",
-            "last_used": None
+            # Category info
+            "category":    final_category,
+            "subcategory": analysis["subcategory"],
+            "style":       analysis["style"],
+
+            # Dominant colour (flat for card display)
+            "color":       analysis["color"],
+            "color_hex":   analysis["color_hex"],
+            "color_rgb":   analysis["color_rgb"],
+
+            # Pattern & material
+            "pattern":     analysis["pattern"],
+            "material":    analysis["material"],
+
+            # Context
+            "season":      analysis["season"],
+            "occasion":    analysis["occasion"],
+
+            # Detailed sub-objects
+            "topwear":     analysis.get("topwear"),
+            "bottomwear":  analysis.get("bottomwear"),
+
+            # Image
+            "image_url":   f"/{file_path}",
+
+            # ML
+            "embedding":   embedding,
+
+            # Status
+            "status":      "clean",
+            "last_used":   None,
         }
 
         result = wardrobe_collection.insert_one(new_item)
         new_item["_id"] = str(result.inserted_id)
 
         return JSONResponse({
-            "message": "✅ Item uploaded successfully!",
+            "message": "✅ Item uploaded and analyzed successfully!",
             "item": new_item
         })
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
 
 
 # ---------------- GET WARDROBE ----------------

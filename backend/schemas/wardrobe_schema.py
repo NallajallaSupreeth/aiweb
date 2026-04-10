@@ -1,28 +1,47 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
+
+
+class ColourInfo(BaseModel):
+    name: str
+    hex: str
+    rgb: str
+    r: int
+    g: int
+    b: int
+    weight: float
+
+
+class GarmentDetail(BaseModel):
+    type: str              # e.g. shirt / jeans
+    pattern: str           # solid / striped / etc.
+    colors: List[ColourInfo]
+    dominant_rgb: List[int]   # [R, G, B]
+
 
 class WardrobeCreate(BaseModel):
-
     user_id: str
-    category: str
-    color: str
-    pattern: str
 
-class WardrobeCreate(BaseModel):
-    user_id: str
-    
-    # MAIN CATEGORY
-    category: str   # topwear / bottomwear / footwear
-    
-    # SUB CATEGORY
-    subcategory: str   # shirt / t-shirt / jeans / hoodie
-    
-    # TYPE / STYLE
-    type: Optional[str] = None   # printed / striped / solid
-    
-    # COLOR
+    # ── Main category ──────────────────────────────────────────────────────
+    category: str           # topwear | bottomwear | footwear | outerwear
+
+    # ── Garment detail ─────────────────────────────────────────────────────
+    subcategory: str        # shirt | jeans | hoodie | etc.
+    style: Optional[str] = None    # casual | formal | ethnic | sporty | denim
+
+    # ── Dominant colour (flat, for card display) ───────────────────────────
     color: str
-    
-    # EXTRA ATTRIBUTES
-    material: Optional[str] = None   # cotton / denim
-    season: Optional[str] = None     # summer / winter
+    color_hex: Optional[str] = None
+    color_rgb: Optional[str] = None
+
+    # ── Pattern ────────────────────────────────────────────────────────────
+    pattern: Optional[str] = None  # solid | striped | checked | printed | floral
+
+    # ── Material & context ─────────────────────────────────────────────────
+    material: Optional[str] = None
+    season:   Optional[str] = None
+    occasion: Optional[str] = None
+
+    # ── Detailed sub-objects (from pipeline) ───────────────────────────────
+    topwear:    Optional[dict] = None
+    bottomwear: Optional[dict] = None
