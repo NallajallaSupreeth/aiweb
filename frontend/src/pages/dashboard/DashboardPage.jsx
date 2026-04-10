@@ -15,6 +15,8 @@ function CalendarSection() {
   const [selectedDay, setSelectedDay] = useState(null);
   const [showAddEvent, setShowAddEvent] = useState(false);
   const [newEvent, setNewEvent] = useState({ title: '', date: '', description: '' });
+  const [googleConnected, setGoogleConnected] = useState(false);
+  const [connectingGoogle, setConnectingGoogle] = useState(false);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -25,9 +27,48 @@ function CalendarSection() {
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
   const blanks = Array.from({ length: firstDay }, (_, i) => i);
 
+  // Check Google connection status + handle redirect callback
   useEffect(() => {
-    api.get('/calendar/events').then(r => setEvents(r.data?.events || [])).catch(() => {});
+    const params = new URLSearchParams(window.location.search);
+    const googleParam = params.get('google');
+
+    if (googleParam === 'connected') {
+      toast.success('Google Calendar connected! 🎉');
+      // Clean URL
+      window.history.replaceState({}, '', '/dashboard');
+    } else if (googleParam === 'error') {
+      toast.error('Google Calendar connection failed. Try again.');
+      window.history.replaceState({}, '', '/dashboard');
+    }
+
+    // Check if already connected
+    api.get('/calendar/status')
+      .then(r => {
+        setGoogleConnected(r.data?.connected || false);
+        if (r.data?.connected) {
+          // Fetch real events
+          api.get('/calendar/events')
+            .then(r2 => setEvents(r2.data?.events || []))
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  const handleConnectGoogle = async () => {
+    setConnectingGoogle(true);
+    try {
+      const res = await api.get('/calendar/connect');
+      const authUrl = res.data?.auth_url;
+      if (authUrl) {
+        // Open Google OAuth in the same tab
+        window.location.href = authUrl;
+      }
+    } catch {
+      toast.error('Failed to start Google connection');
+      setConnectingGoogle(false);
+    }
+  };
 
   const getEventsForDay = (day) => {
     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -36,22 +77,41 @@ function CalendarSection() {
 
   const handleAddEvent = async () => {
     if (!newEvent.title || !newEvent.date) { toast.error('Title and date required'); return; }
+    if (!googleConnected) {
+      toast.error('Please connect Google Calendar first');
+      return;
+    }
     try {
       await api.post('/calendar/add-event', newEvent);
-      toast.success('Event added!');
+      toast.success('✅ Event added to Google Calendar!');
       setShowAddEvent(false);
       setNewEvent({ title: '', date: '', description: '' });
-    } catch { toast.error('Failed to add event'); }
+      // Refresh events
+      api.get('/calendar/events').then(r => setEvents(r.data?.events || [])).catch(() => {});
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to add event');
+    }
   };
 
   const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
   return (
     <div className="card" style={{ padding: 24 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <CalendarDays size={20} color="var(--accent)" />
           <h2 style={{ fontSize: 18, fontWeight: 700 }}>Calendar</h2>
+          {/* Google connection status badge */}
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            padding: '2px 8px', borderRadius: 100, fontSize: 11, fontWeight: 600,
+            background: googleConnected ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)',
+            color: googleConnected ? '#16a34a' : '#ef4444',
+            border: `1px solid ${googleConnected ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: googleConnected ? '#22c55e' : '#ef4444', display: 'inline-block' }} />
+            {googleConnected ? 'Google Connected' : 'Not Connected'}
+          </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-secondary)', minWidth: 140, textAlign: 'center' }}>
@@ -68,6 +128,65 @@ function CalendarSection() {
           </button>
         </div>
       </div>
+
+      {/* Google Connect Banner — shown when not connected */}
+      {!googleConnected && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 16px',
+          background: 'linear-gradient(135deg, rgba(51,51,204,0.06), rgba(136,68,238,0.06))',
+          border: '1px solid rgba(51,51,204,0.15)',
+          borderRadius: 10,
+          marginBottom: 16,
+          gap: 12,
+          flexWrap: 'wrap',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 22 }}>📅</span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                Connect Google Calendar
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Sync your events and add new ones directly to Google Calendar
+              </div>
+            </div>
+          </div>
+          <button
+            id="connect-google-calendar"
+            onClick={handleConnectGoogle}
+            disabled={connectingGoogle}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 16px',
+              background: 'white',
+              border: '1.5px solid rgba(51,51,204,0.3)',
+              borderRadius: 8,
+              cursor: 'pointer',
+              fontFamily: "'Inter', sans-serif",
+              fontWeight: 600,
+              fontSize: 13,
+              color: 'var(--accent)',
+              whiteSpace: 'nowrap',
+              transition: 'all 0.2s',
+            }}
+          >
+            {connectingGoogle ? (
+              '⏳ Connecting…'
+            ) : (
+              <>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                </svg>
+                Connect Google Calendar
+              </>
+            )}
+          </button>
+        </div>
+      )}
 
       {/* Week headers */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 8 }}>
@@ -142,6 +261,11 @@ function CalendarSection() {
               }}>
                 <div style={{ fontWeight: 600 }}>{ev.summary || ev.title}</div>
                 {ev.description && <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>{ev.description}</div>}
+                {ev.start?.dateTime && (
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4 }}>
+                    🕐 {new Date(ev.start.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                )}
               </div>
             ))
           )}
@@ -154,9 +278,21 @@ function CalendarSection() {
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
         }}>
-          <div className="card animate-scale-in" style={{ width: 400, padding: 28 }}>
+          <div className="card animate-scale-in" style={{ width: 420, padding: 28 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <h3 style={{ fontSize: 18, fontWeight: 700 }}>New Calendar Event</h3>
+              <div>
+                <h3 style={{ fontSize: 18, fontWeight: 700 }}>New Calendar Event</h3>
+                {googleConnected && (
+                  <p style={{ fontSize: 12, color: '#16a34a', marginTop: 2 }}>
+                    ✅ Will be saved to Google Calendar
+                  </p>
+                )}
+                {!googleConnected && (
+                  <p style={{ fontSize: 12, color: '#ef4444', marginTop: 2 }}>
+                    ⚠️ Connect Google Calendar to save events
+                  </p>
+                )}
+              </div>
               <button className="btn btn-icon btn-ghost" onClick={() => setShowAddEvent(false)}><X size={16} /></button>
             </div>
             <div className="form-group">
@@ -176,7 +312,15 @@ function CalendarSection() {
             </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button className="btn btn-ghost" onClick={() => setShowAddEvent(false)}>Cancel</button>
-              <button id="add-event-confirm" className="btn btn-primary" onClick={handleAddEvent}>Add Event</button>
+              <button
+                id="add-event-confirm"
+                className="btn btn-primary"
+                onClick={handleAddEvent}
+                disabled={!googleConnected}
+                style={{ opacity: googleConnected ? 1 : 0.5 }}
+              >
+                Add to Google Calendar
+              </button>
             </div>
           </div>
         </div>
