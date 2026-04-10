@@ -1,6 +1,7 @@
 import os
 import shutil
 import uuid
+import traceback
 from fastapi import APIRouter, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from bson import ObjectId
@@ -243,18 +244,41 @@ async def recommend_outfit(item_id: str, user_id: str = Depends(get_current_user
 
 
 # ---------------- OUTFIT ----------------
+
 @router.get("/wardrobe/outfit/{item_id}")
 async def get_outfit(item_id: str, user_id: str = Depends(get_current_user)):
     try:
+        print(f"🔍 Received item_id: {item_id}")
+
+        # ✅ Validate ID
+        if not ObjectId.is_valid(item_id):
+            raise HTTPException(status_code=400, detail="Invalid item_id")
+
         input_item = wardrobe_collection.find_one({
             "_id": ObjectId(item_id),
             "user_id": user_id
         })
 
+        print(f"🧥 Input item: {input_item}")
+
+        if not input_item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
         wardrobe_items = list(wardrobe_collection.find({"user_id": user_id}))
+
+        print(f"📦 Wardrobe count: {len(wardrobe_items)}")
+
         outfit = generate_outfit(input_item, wardrobe_items)
+
+        print(f"👗 Generated outfit: {outfit}")
+
+        if not outfit:
+            return {"outfit": None, "message": "No outfit found"}
 
         return {"outfit": outfit}
 
+    except HTTPException:
+        raise
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

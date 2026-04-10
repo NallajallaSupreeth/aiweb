@@ -14,6 +14,7 @@ class ColourInfo(BaseModel):
 
 class GarmentDetail(BaseModel):
     type: str              # e.g. shirt / jeans
+    confidence: float = 0.0   # CLIP classification confidence (0.0–1.0)
     pattern: str           # solid / striped / etc.
     colors: List[ColourInfo]
     dominant_rgb: List[int]   # [R, G, B]

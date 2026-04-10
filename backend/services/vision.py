@@ -2,11 +2,16 @@
 Complete AI Clothing Vision Pipeline
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Step 1 → Background Removal (rembg U²-Net)
-Step 2 → Top/Bottom Segmentation (numpy slicing)
-Step 3 → KMeans Color Extraction (scikit-learn)
-Step 4 → Pattern Detection (Gemini Vision)
-Step 5 → Clothing Type Detection (Gemini + rules)
+Step 2 → Single-item detection (pixel distribution analysis)
+Step 3 → CLIP-based Clothing Type Classification (FINAL AUTHORITY)
+Step 4 → KMeans Color Extraction (scikit-learn)
+Step 5 → Pattern Detection (Gemini Vision — pattern/style ONLY)
 Step 6 → Structured JSON output saved to MongoDB
+
+IMPORTANT:
+  - CLIP is the SOLE authority for clothing TYPE and CATEGORY
+  - Gemini is used ONLY for pattern, material, style
+  - Category is DERIVED from CLIP type via CATEGORY_MAP
 """
 import os
 import io
@@ -14,6 +19,7 @@ import json
 import base64
 import requests
 import numpy as np
+import torch
 from PIL import Image
 from dotenv import load_dotenv
 
@@ -196,43 +202,182 @@ def _detect_pattern_rules(pil_image: Image.Image) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 5 — Clothing Type Detection (Gemini + Rules)
+# STEP 5 — CLIP-based Clothing Type Classification (FINAL AUTHORITY)
 # ═══════════════════════════════════════════════════════════════════════════════
-TOPWEAR_TYPES    = {"t-shirt","shirt","hoodie","sweater","blouse","tank top","kurta","jacket","blazer","crop top","polo"}
-BOTTOMWEAR_TYPES = {"jeans","trousers","shorts","skirt","leggings","chinos","cargo pants","joggers","dhoti"}
 
-def detect_clothing_type_gemini(crop_image: Image.Image, section: str = "top") -> str:
-    """Ask Gemini to name the clothing type."""
-    if not GEMINI_API_KEY:
-        return "shirt" if section == "top" else "jeans"
-    try:
-        b64 = _pil_to_base64(crop_image)
-        if section == "top":
-            options = "t-shirt, shirt, hoodie, sweater, blouse, tank top, kurta, jacket, blazer, crop top, polo"
+# ── Fashion labels ────────────────────────────────────────────────────────────
+TOP_LABELS    = ["shirt", "t-shirt", "hoodie", "jacket", "kurta"]
+BOTTOM_LABELS = ["jeans", "trousers", "shorts", "track pants"]
+ALL_LABELS    = TOP_LABELS + BOTTOM_LABELS   # used for full-image classification
+
+# ── Authoritative category mapping (CLIP type → category) ────────────────────
+CATEGORY_MAP = {
+    "shirt":       "topwear",
+    "t-shirt":     "topwear",
+    "hoodie":      "topwear",
+    "jacket":      "topwear",
+    "kurta":       "topwear",
+    "jeans":       "bottomwear",
+    "trousers":    "bottomwear",
+    "shorts":      "bottomwear",
+    "track pants": "bottomwear",
+}
+
+# ── Global CLIP model (loaded once, reused across requests) ───────────────────
+_clip_model     = None
+_clip_processor = None
+
+def load_clip_model():
+    """Load CLIP model and processor once globally. Thread-safe via GIL."""
+    global _clip_model, _clip_processor
+    if _clip_model is None:
+        print("[CLIP] Loading openai/clip-vit-base-patch32 …")
+        from transformers import CLIPModel, CLIPProcessor
+        model_name = "openai/clip-vit-base-patch32"
+        _clip_processor = CLIPProcessor.from_pretrained(model_name)
+        _clip_model     = CLIPModel.from_pretrained(model_name)
+        _clip_model.eval()        # inference mode – no grad needed
+        print("[CLIP] Model loaded ✔")
+    return _clip_model, _clip_processor
+
+
+def classify_clothing(image: Image.Image, labels: list) -> dict:
+    """
+    Classify a clothing image against a list of text labels using CLIP.
+
+    Returns:
+        {"type": str, "confidence": float, "all_scores": dict}
+    """
+    model, processor = load_clip_model()
+
+    # Prepare text prompts ("a photo of a <label>" improves CLIP accuracy)
+    text_prompts = [f"a photo of a {label}" for label in labels]
+
+    # Resize to 224×224 for CLIP
+    img_rgb = image.convert("RGB").resize((224, 224), Image.LANCZOS)
+
+    # Tokenize and encode
+    inputs = processor(
+        text=text_prompts,
+        images=img_rgb,
+        return_tensors="pt",
+        padding=True,
+    )
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    # Compute softmax probabilities from image-text similarity
+    logits = outputs.logits_per_image[0]        # shape: (num_labels,)
+    probs  = torch.softmax(logits, dim=0).cpu().numpy()
+
+    best_idx  = int(probs.argmax())
+    best_label = labels[best_idx]
+    confidence = round(float(probs[best_idx]), 4)
+
+    all_scores = {label: round(float(probs[i]), 4) for i, label in enumerate(labels)}
+
+    print(f"[CLIP] Classified → {best_label} ({confidence:.2%}) | scores: {all_scores}")
+    return {"type": best_label, "confidence": confidence, "all_scores": all_scores}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 2b — Single-item Detection
+# ═══════════════════════════════════════════════════════════════════════════════
+def detect_single_item(rgba_image: Image.Image) -> bool:
+    """
+    Detect whether the image contains a SINGLE clothing item or a full outfit.
+
+    Logic:
+      - Compute the vertical distribution of non-transparent pixels
+      - If the clothing object is concentrated in one region (top-heavy OR
+        bottom-heavy), it's a single item
+      - If pixels are spread fairly evenly across the full height, it's an outfit
+
+    Returns:
+        True  → single item (do NOT split)
+        False → multiple items / outfit (split into top/bottom)
+    """
+    arr = np.array(rgba_image)
+    alpha = arr[:, :, 3]
+    h = alpha.shape[0]
+
+    if h == 0:
+        return True
+
+    mid = h // 2
+    top_pixels = (alpha[:mid, :] > 10).sum()
+    bot_pixels = (alpha[mid:, :] > 10).sum()
+    total_pixels = top_pixels + bot_pixels
+
+    if total_pixels < 100:
+        return True   # barely any content
+
+    top_ratio = top_pixels / total_pixels
+    bot_ratio = bot_pixels / total_pixels
+
+    # If one half has ≥70% of all clothing pixels → it's a single item
+    is_single = (top_ratio >= 0.70) or (bot_ratio >= 0.70)
+
+    print(f"[SingleItem] top={top_ratio:.1%} bot={bot_ratio:.1%} → {'SINGLE' if is_single else 'OUTFIT'}")
+    return is_single
+
+
+def process_outfit(rgba_image: Image.Image) -> dict:
+    """
+    Smart CLIP-based outfit classification.
+
+    IF single item → classify full image against ALL labels
+    IF outfit       → split into top/bottom, classify each half
+
+    Returns dict with topwear/bottomwear sub-dicts including type + confidence.
+    """
+    is_single = detect_single_item(rgba_image)
+
+    if is_single:
+        # ── SINGLE ITEM: classify full image against ALL labels ──────────
+        result = classify_clothing(rgba_image, ALL_LABELS)
+        clip_type   = result["type"]
+        confidence  = result["confidence"]
+        category    = CATEGORY_MAP.get(clip_type, "topwear")
+
+        # Apply confidence filter
+        if confidence < 0.5:
+            clip_type = "unknown"
+
+        print(f"[Pipeline] Single item detected: {clip_type} → {category} ({confidence:.2%})")
+
+        if category == "topwear":
+            return {
+                "is_single": True,
+                "single_category": "topwear",
+                "topwear":    {"type": clip_type, "confidence": confidence},
+                "bottomwear": {"type": "unknown", "confidence": 0.0},
+            }
         else:
-            options = "jeans, trousers, shorts, skirt, leggings, chinos, cargo pants, joggers"
+            return {
+                "is_single": True,
+                "single_category": "bottomwear",
+                "topwear":    {"type": "unknown", "confidence": 0.0},
+                "bottomwear": {"type": clip_type, "confidence": confidence},
+            }
+    else:
+        # ── OUTFIT: split and classify each half ─────────────────────────
+        top_crop, bot_crop = segment_top_bottom(rgba_image)
+        top_result = classify_clothing(top_crop, TOP_LABELS)
+        bot_result = classify_clothing(bot_crop, BOTTOM_LABELS)
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key={GEMINI_API_KEY}"
-        body = {
-            "contents": [{
-                "parts": [
-                    {"text": f"What type of {section}wear clothing is in this image? Reply with ONLY ONE item from this list: {options}. No explanation."},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": b64}}
-                ]
-            }],
-            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 15}
+        top_type = top_result["type"] if top_result["confidence"] >= 0.5 else "unknown"
+        bot_type = bot_result["type"] if bot_result["confidence"] >= 0.5 else "unknown"
+
+        print(f"[Pipeline] Outfit: top={top_type}({top_result['confidence']:.2%}), bot={bot_type}({bot_result['confidence']:.2%})")
+
+        return {
+            "is_single": False,
+            "single_category": None,
+            "topwear":    {"type": top_type,    "confidence": top_result["confidence"]},
+            "bottomwear": {"type": bot_type,    "confidence": bot_result["confidence"]},
         }
-        res = requests.post(url, json=body, timeout=15)
-        raw = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip().lower()
-        # Match to known types
-        known = TOPWEAR_TYPES if section == "top" else BOTTOMWEAR_TYPES
-        for word in raw.replace(",","").split():
-            if word in known:
-                return word
-        return raw.strip(".,;:")[:20]
-    except Exception as e:
-        print(f"[Type Gemini] {e}")
-        return "shirt" if section == "top" else "jeans"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -243,12 +388,15 @@ def analyze_clothing_image(image_url: str = None, file_path: str = None) -> dict
     Full AI pipeline:
       1. Load & resize image
       2. Remove background (rembg)
-      3. Split top / bottom
-      4. KMeans colour extraction for each half
-      5. Gemini Vision: pattern + clothing type
-      6. Return structured dict for MongoDB
+      3. Detect single item vs outfit
+      4. CLIP classification (SOLE AUTHORITY for type + category)
+      5. KMeans colour extraction
+      6. Gemini Vision: pattern ONLY
+      7. Return structured dict for MongoDB
 
-    Returns a flat dict that also contains 'topwear' and 'bottomwear' sub-dicts.
+    CLIP is the FINAL AUTHORITY for clothing type and category.
+    Category is DERIVED from CLIP type via CATEGORY_MAP.
+    Gemini is restricted to pattern/style ONLY.
     """
     # ── Load image ────────────────────────────────────────────────────────────
     try:
@@ -271,58 +419,95 @@ def analyze_clothing_image(image_url: str = None, file_path: str = None) -> dict
     print("[Vision] Removing background…")
     rgba = remove_background(img)
 
-    # ── Step 2: Segment ───────────────────────────────────────────────────────
+    # ── Step 2+3: Smart CLIP classification (single item OR split) ────────────
+    print("[Vision] Running CLIP clothing classification…")
+    try:
+        outfit = process_outfit(rgba)
+        is_single       = outfit["is_single"]
+        single_category = outfit.get("single_category")
+        top_type        = outfit["topwear"]["type"]
+        top_confidence  = outfit["topwear"]["confidence"]
+        bot_type        = outfit["bottomwear"]["type"]
+        bot_confidence  = outfit["bottomwear"]["confidence"]
+    except Exception as e:
+        print(f"[CLIP] Failed ({e}), using fallback…")
+        is_single       = True
+        single_category = "topwear"
+        top_type        = "unknown"
+        top_confidence  = 0.0
+        bot_type        = "unknown"
+        bot_confidence  = 0.0
+
+    # ── Step 4: Colour extraction ─────────────────────────────────────────────
+    print("[Vision] Extracting colours…")
     top_crop, bot_crop = segment_top_bottom(rgba)
 
-    # ── Step 3: Colour extraction ─────────────────────────────────────────────
-    print("[Vision] Extracting colours…")
-    top_colours = extract_kmeans_colours(top_crop, k=3)
-    bot_colours = extract_kmeans_colours(bot_crop, k=3)
-
-    # ── Steps 4 & 5: Gemini (pattern + type) — concurrent via threads ─────────
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        f_top_type    = ex.submit(detect_clothing_type_gemini, top_crop, "top")
-        f_bot_type    = ex.submit(detect_clothing_type_gemini, bot_crop, "bottom")
-        f_top_pattern = ex.submit(detect_pattern_gemini, top_crop, "topwear")
-        f_bot_pattern = ex.submit(detect_pattern_gemini, bot_crop, "bottomwear")
-
-        top_type    = f_top_type.result()
-        bot_type    = f_bot_type.result()
-        top_pattern = f_top_pattern.result()
-        bot_pattern = f_bot_pattern.result()
-
-    # ── Determine main (overall) category ─────────────────────────────────────
-    # Dominant colour for quick card display
-    dominant_top = top_colours[0] if top_colours else {}
-    dominant_bot = bot_colours[0] if bot_colours else {}
-
-    # Category = topwear if the top region has more opaque pixels than bottom
-    top_px = np.array(top_crop)
-    bot_px = np.array(bot_crop)
-    top_count = (top_px[:,:,3] > 10).sum()
-    bot_count = (bot_px[:,:,3] > 10).sum()
-
-    if top_count >= bot_count * 0.7:   # top has meaningful pixels → it's topwear
-        main_category  = "topwear"
-        main_subcat    = top_type
-        main_colour    = dominant_top.get("name", "unknown")
-        main_hex       = dominant_top.get("hex",  "#808080")
-        main_rgb       = dominant_top.get("rgb",  "rgb(128,128,128)")
-        main_pattern   = top_pattern
+    if is_single:
+        # For single items, extract colour from the full image
+        full_colours = extract_kmeans_colours(rgba, k=3)
+        if single_category == "topwear":
+            top_colours = full_colours
+            bot_colours = [{"name":"unknown","hex":"#808080","rgb":"rgb(128,128,128)","r":128,"g":128,"b":128,"weight":1.0}]
+        else:
+            top_colours = [{"name":"unknown","hex":"#808080","rgb":"rgb(128,128,128)","r":128,"g":128,"b":128,"weight":1.0}]
+            bot_colours = full_colours
     else:
-        main_category  = "bottomwear"
-        main_subcat    = bot_type
-        main_colour    = dominant_bot.get("name", "unknown")
-        main_hex       = dominant_bot.get("hex",  "#808080")
-        main_rgb       = dominant_bot.get("rgb",  "rgb(128,128,128)")
-        main_pattern   = bot_pattern
+        top_colours = extract_kmeans_colours(top_crop, k=3)
+        bot_colours = extract_kmeans_colours(bot_crop, k=3)
 
-    # Infer style/material/season/occasion from subcat
+    # ── Step 5: Gemini pattern detection ONLY (concurrent) ────────────────────
+    import concurrent.futures
+    pattern_image = rgba if is_single else None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        if is_single:
+            # Pattern on the full image
+            section_name = single_category or "clothing"
+            f_pattern = ex.submit(detect_pattern_gemini, rgba, section_name)
+            main_pattern = f_pattern.result()
+            top_pattern  = main_pattern if single_category == "topwear"  else "solid"
+            bot_pattern  = main_pattern if single_category == "bottomwear" else "solid"
+        else:
+            f_top_pattern = ex.submit(detect_pattern_gemini, top_crop, "topwear")
+            f_bot_pattern = ex.submit(detect_pattern_gemini, bot_crop, "bottomwear")
+            top_pattern = f_top_pattern.result()
+            bot_pattern = f_bot_pattern.result()
+
+    # ── Determine main category — DERIVED FROM CLIP TYPE (not pixel count) ────
+    # CLIP is the sole authority. Category comes from CATEGORY_MAP.
+    if is_single:
+        main_category = single_category
+        main_subcat   = top_type if single_category == "topwear" else bot_type
+        main_conf     = top_confidence if single_category == "topwear" else bot_confidence
+        main_pattern_final = top_pattern if single_category == "topwear" else bot_pattern
+        dominant = (top_colours if single_category == "topwear" else bot_colours)
+        dominant_info = dominant[0] if dominant else {}
+    else:
+        # For outfit: pick the higher-confidence detection as the main item
+        if top_confidence >= bot_confidence:
+            main_category = "topwear"
+            main_subcat   = top_type
+            main_conf     = top_confidence
+            main_pattern_final = top_pattern
+            dominant_info = top_colours[0] if top_colours else {}
+        else:
+            main_category = "bottomwear"
+            main_subcat   = bot_type
+            main_conf     = bot_confidence
+            main_pattern_final = bot_pattern
+            dominant_info = bot_colours[0] if bot_colours else {}
+
+    main_colour = dominant_info.get("name", "unknown")
+    main_hex    = dominant_info.get("hex",  "#808080")
+    main_rgb    = dominant_info.get("rgb",  "rgb(128,128,128)")
+
+    # Infer style/material/season/occasion from CLIP's subcat
     style    = _infer_style(main_subcat)
     material = _infer_material(main_subcat)
     season   = _infer_season(main_subcat)
     occasion = _infer_occasion(main_subcat)
+
+    dominant_top = top_colours[0] if top_colours else {}
+    dominant_bot = bot_colours[0] if bot_colours else {}
 
     result = {
         # ── Flat fields (for card display & filtering) ──
@@ -332,27 +517,30 @@ def analyze_clothing_image(image_url: str = None, file_path: str = None) -> dict
         "color":       main_colour,
         "color_hex":   main_hex,
         "color_rgb":   main_rgb,
-        "pattern":     main_pattern,
+        "pattern":     main_pattern_final,
         "material":    material,
         "season":      season,
         "occasion":    occasion,
 
-        # ── Structured sub-objects (detailed) ──
+        # ── Structured sub-objects (detailed, with CLIP confidence) ──
         "topwear": {
             "type":          top_type,
+            "confidence":    top_confidence,
             "pattern":       top_pattern,
-            "colors":        top_colours,        # list of {name, hex, rgb, weight}
+            "colors":        top_colours,
             "dominant_rgb":  [dominant_top.get("r",128), dominant_top.get("g",128), dominant_top.get("b",128)],
         },
         "bottomwear": {
             "type":          bot_type,
+            "confidence":    bot_confidence,
             "pattern":       bot_pattern,
             "colors":        bot_colours,
             "dominant_rgb":  [dominant_bot.get("r",128), dominant_bot.get("g",128), dominant_bot.get("b",128)],
         },
     }
 
-    print(f"[Vision] Result: cat={main_category} sub={main_subcat} color={main_colour} pattern={main_pattern}")
+    print(f"[Vision] ✔ Result: cat={main_category} sub={main_subcat} color={main_colour} pattern={main_pattern_final}")
+    print(f"[Vision] ✔ CLIP: top={top_type}({top_confidence:.2%}), bottom={bot_type}({bot_confidence:.2%}), single={is_single}")
     return result
 
 
@@ -363,6 +551,7 @@ def _infer_style(subcat: str) -> str:
         "kurta": "ethnic", "hoodie": "streetwear", "blazer": "formal",
         "jacket": "streetwear", "leggings": "sporty", "shorts": "sporty",
         "trousers": "formal", "t-shirt": "casual", "shirt": "casual",
+        "track pants": "sporty", "unknown": "casual",
     }
     return m.get(subcat, "casual")
 
@@ -371,7 +560,8 @@ def _infer_material(subcat: str) -> str:
         "jeans": "denim", "hoodie": "fleece", "sweater": "wool",
         "t-shirt": "cotton", "shirt": "cotton", "shorts": "cotton",
         "leggings": "polyester", "trousers": "polyester", "cargo pants": "cotton",
-        "chinos": "cotton", "joggers": "fleece",
+        "chinos": "cotton", "joggers": "fleece", "track pants": "polyester",
+        "unknown": "cotton",
     }
     return m.get(subcat, "cotton")
 
@@ -398,12 +588,12 @@ def _fallback_result() -> dict:
         "color": "unknown", "color_hex": "#808080", "color_rgb": "rgb(128,128,128)",
         "pattern": "solid", "material": "cotton", "season": "all-season", "occasion": "casual",
         "topwear": {
-            "type": "shirt", "pattern": "solid",
+            "type": "shirt", "confidence": 0.0, "pattern": "solid",
             "colors": [{"name":"unknown","hex":"#808080","rgb":"rgb(128,128,128)","r":128,"g":128,"b":128,"weight":1.0}],
             "dominant_rgb": [128, 128, 128],
         },
         "bottomwear": {
-            "type": "jeans", "pattern": "solid",
+            "type": "jeans", "confidence": 0.0, "pattern": "solid",
             "colors": [{"name":"unknown","hex":"#808080","rgb":"rgb(128,128,128)","r":128,"g":128,"b":128,"weight":1.0}],
             "dominant_rgb": [128, 128, 128],
         },

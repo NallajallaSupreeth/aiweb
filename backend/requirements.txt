@@ -17,3 +17,4 @@ dnspython
 clarifai
 google-genai
 rembg
+transformers
