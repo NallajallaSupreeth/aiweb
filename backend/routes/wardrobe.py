@@ -154,6 +154,35 @@ async def delete_wardrobe_item(
         raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
 
 
+# ---------------- CLEAR ALL WARDROBE ----------------
+@router.delete("/wardrobe")
+async def clear_wardrobe(user_id: str = Depends(get_current_user)):
+    try:
+        # Get all items to delete their image files too
+        items = list(wardrobe_collection.find({"user_id": user_id}))
+
+        # Delete image files from disk
+        for item in items:
+            image_path = item.get("image_url", "").lstrip("/")
+            if image_path and os.path.exists(image_path):
+                try:
+                    os.remove(image_path)
+                except Exception:
+                    pass
+
+        # Delete all from MongoDB
+        result = wardrobe_collection.delete_many({"user_id": user_id})
+
+        return {
+            "message": f"🗑️ Wardrobe cleared! {result.deleted_count} item(s) removed.",
+            "deleted_count": result.deleted_count
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Clear wardrobe failed: {e}")
+
+
+
 # ---------------- UPDATE ----------------
 @router.put("/wardrobe/{item_id}")
 async def update_wardrobe_item(

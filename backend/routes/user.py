@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from bson import ObjectId
 from db.connection import db
 from utils.dependencies import get_current_user
+from utils.password_hash import hash_password, verify_password
 from services.auth_service import (
     get_user_by_id,
     update_user as update_user_service
@@ -121,3 +122,45 @@ def delete_user(user_id: str):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
+
+
+# ==============================
+# 🔑 CHANGE PASSWORD
+# ==============================
+@router.post("/user/change-password")
+def change_password(data: dict, user_id: str = Depends(get_current_user)):
+    try:
+        email = data.get("email", "").strip()
+        new_password = data.get("new_password", "")
+        confirm_password = data.get("confirm_password", "")
+
+        if not email or not new_password or not confirm_password:
+            raise HTTPException(status_code=400, detail="All fields are required")
+
+        if new_password != confirm_password:
+            raise HTTPException(status_code=400, detail="Passwords do not match")
+
+        if len(new_password) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+        # Verify email belongs to this user
+        user = get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if user.get("email", "").lower() != email.lower():
+            raise HTTPException(status_code=400, detail="Email does not match your account")
+
+        # Update password
+        hashed = hash_password(new_password)
+        user_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"password": hashed}}
+        )
+
+        return {"message": "✅ Password updated successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to change password: {e}")
