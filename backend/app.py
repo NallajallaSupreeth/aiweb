@@ -85,7 +85,8 @@ from routes import (
     style_dna_routes,
     weather,
     feedback,
-    google_calendar
+    google_calendar,
+    quiz,
 )
 
 # ==============================
@@ -129,6 +130,13 @@ app.include_router(
     google_calendar.router,
     prefix="/api/calendar",
     tags=["Google Calendar"]
+)
+
+# 🧠 AI STYLE QUIZ (GEMINI)
+app.include_router(
+    quiz.router,
+    prefix="/api",
+    tags=["Style Quiz"]
 )
 
 # ==============================
